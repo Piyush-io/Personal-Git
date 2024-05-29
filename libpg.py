@@ -141,58 +141,12 @@ class GitRepository(object):
 def cmd_add(args):
     print("Command: add")
 
-def cmd_cat_file(args):
-    repo = repo_find()
-    cat_file(repo, args.object, fmt=args.type.encode())
-
-def cmd_check_ignore(args):
-    print("Command: check-ignore")
-
-def cmd_checkout(args):
-    print("Command: checkout")
-
-def cmd_commit(args):
-    print("Command: commit")
-
-def cmd_hash_object(args):
-    if args.write:
-        repo = repo_find()
-    else:
-        repo = None
-
-    with open(args.path, "rb") as fd:
-        sha = object_hash(fd, args.type.encode(), repo)
-        print(sha)
-
 def cmd_init(args):
     GitRepository.repo_create(args.path)
     print(f"Initialized empty repository in {args.path}/.git")
 
-def cmd_log(args):
-    print("Command: log")
 
-def cmd_ls_files(args):
-    print("Command: ls-files")
-
-def cmd_ls_tree(args):
-    print("Command: ls-tree")
-
-def cmd_rev_parse(args):
-    print("Command: rev-parse")
-
-def cmd_rm(args):
-    print("Command: rm")
-
-def cmd_show_ref(args):
-    print("Command: show-ref")
-
-def cmd_status(args):
-    print("Command: status")
-
-def cmd_tag(args):
-    print("Command: tag")
-
-# the "wyag init [path]" command will be used to create a new repository at the given path
+# the "pg init [path]" command will be used to create a new repository at the given path
 argsp = argsubparsers.add_parser("init", help="Initialize a new, empty repository.")
 argsp.add_argument("path",
                     metavar="directory",
@@ -318,6 +272,9 @@ argsp.add_argument("object",
                    metavar="object",
                    help="The object to display")
 
+def cmd_cat_file(args):
+    repo = repo_find()
+    cat_file(repo, args.object, fmt=args.type.encode())
 
 def cat_file(repo, obj, fmt=None):
     obj = object_read(repo, object_find(repo, obj, fmt=fmt))
@@ -345,6 +302,16 @@ argsp.add_argument("-w",
 argsp.add_argument("path",
                    help="Read object from <file>")
 
+def cmd_hash_object(args):
+    if args.write:
+        repo = repo_find()
+    else:
+        repo = None
+
+    with open(args.path, "rb") as fd:
+        sha = object_hash(fd, args.type.encode(), repo)
+        print(sha)
+
 def object_hash(fd, fmt, repo=None):
     """ Hash object, writing it to repo if provided."""
     data = fd.read()
@@ -358,3 +325,131 @@ def object_hash(fd, fmt, repo=None):
         case _: raise Exception("Unknown type %s!" % fmt)
 
     return object_write(obj, repo)
+
+
+def kvlm_parse(raw, start=0, dct=None):
+    if not dct:
+        dct = collections.OrderedDict()
+        # You CANNOT declare the argument as dct=OrderedDict() or all
+        # call to the functions will endlessly grow the same dict.
+
+    # We search for the next space and the next newline.
+    spc = raw.find(b' ', start) #spc is space 
+    nl = raw.find(b'\n', start) #nl is newline
+
+    # If space appears before newline, we have a keyword.  Otherwise,
+    # it's the final message, which we just read to the end of the file.
+
+    # Base case
+    # If newline appears first (or there's no space at all, in which
+    # case find returns -1), we assume a blank line. We store the message in
+    # the dictionary, with None as the key, and return.
+    if (spc < 0) or (nl < spc):
+        assert nl == start
+        dct[None] = raw[start+1:]
+        return dct
+
+    # Recursive case
+    # ==============
+    # we read a key-value pair and recurse for the next.
+    key = raw[start:spc]
+
+    # Find the end of the value.  Continuation lines begin with a
+    # space, so we loop until we find a "\n" not followed by a space.
+    end = start
+    while True:
+        end = raw.find(b'\n', end+1)
+        if raw[end+1] != ord(' '): break
+
+    # Grab the value
+    # Also, drop the leading space on continuation lines
+    value = raw[spc+1:end].replace(b'\n ', b'\n')
+
+    # Don't overwrite existing data contents
+    if key in dct:
+        if type(dct[key]) == list:
+            dct[key].append(value)  # If already a list, append
+                                    # as multiple values are possible for the same key like in the case of parents
+        else:
+            dct[key] = [ dct[key], value ]
+    else:
+        dct[key]=value
+
+    return kvlm_parse(raw, start=end+1, dct=dct)
+
+def kvlm_serialize(kvlm):
+    ret = b''
+
+    # Output fields
+    for k in kvlm.keys():
+        # Skip the message itself
+        if k == None: continue
+        val = kvlm[k]
+        # Normalize to a list
+        if type(val) != list:
+            val = [ val ]
+
+        for v in val:
+            ret += k + b' ' + (v.replace(b'\n', b'\n ')) + b'\n'
+
+    # Append message
+    ret += b'\n' + kvlm[None] + b'\n'
+
+    return ret
+
+class GitCommit(GitObject):
+    fmt=b'commit'
+
+    def deserialize(self, data):
+        self.kvlm = kvlm_parse(data)
+
+    def serialize(self):
+        return kvlm_serialize(self.kvlm)
+
+    def init(self):
+        self.kvlm = dict()
+
+argsp = argsubparsers.add_parser("log", help="Display history of a given commit.")
+argsp.add_argument("commit",
+                   default="HEAD",
+                   nargs="?",
+                   help="Commit to start at.")
+
+def cmd_log(args):
+    repo = repo_find()
+    print("digraph wyaglog{")
+    print("  node[shape=rect]")
+    log_graphviz(repo, object_find(repo, args.commit), set())
+    print("}")
+
+def log_graphviz(repo, sha, seen):
+
+    if sha in seen:
+        return
+    seen.add(sha)
+
+    commit = object_read(repo, sha)
+    short_hash = sha[0:8]
+    message = commit.kvlm[None].decode("utf8").strip()
+    message = message.replace("\\", "\\\\")
+    message = message.replace("\"", "\\\"")
+
+    if "\n" in message: # Keep only the first line
+        message = message[:message.index("\n")]
+
+    print("  c_{0} [label=\"{1}: {2}\"]".format(sha, sha[0:7], message))
+    assert commit.fmt==b'commit'
+
+    if not b'parent' in commit.kvlm.keys():
+        # Base case: the initial commit.
+        return
+
+    parents = commit.kvlm[b'parent']
+
+    if type(parents) != list:
+        parents = [ parents ]
+
+    for p in parents:
+        p = p.decode("ascii")
+        print ("  c_{0} -> c_{1};".format(sha, p))
+        log_graphviz(repo, p, seen)
