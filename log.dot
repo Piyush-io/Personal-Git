@@ -1,0 +1,4 @@
+digraph pglog {
+  node[shape=rect];
+  "e03158242ecab460f31b0d6ae1642880577ccbe8" [label="Commit object with SHA e03158242ecab460f31b0d6ae1642880577ccbe8 not found in repository."];
+}
